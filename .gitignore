@@ -1,0 +1,64 @@
+```gitignore
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+*.local
+
+# Database
+*.db
+*.sqlite
+data/
+postgres-data/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+*.test
+*.out
+
+# Go
+go.work
+go.work.sum
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+ENV/
+.venv
+pip-log.txt
+.pytest_cache/
+
+# Rust
+target/
+Cargo.lock
+```
