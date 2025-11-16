@@ -64,13 +64,16 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     HttpServer::new(|| {
         let cors = Cors::permissive();
-        
+
         App::new()
             .wrap(cors)
             .route("/health", web::get().to(health_check))
             .route("/auth/sign", web::post().to(sign_transaction))
-            .route("/auth/verify", web::post().to(verify_transaction))
-            .route("/auth/agent/{agent_id}/public-key", web::get().to(get_public_key))
+            .route("/auth/verify", web::post().to(verify_transaction_standalone))
+            .route("/auth/agent/{agent_id}/public-key", web::get().to(get_public_key_standalone))
+            // New agents API routes with on-demand DB connection
+            .route("/api/v1/agents", web::get().to(list_agents_with_db))
+            .route("/api/v1/agents/{agent_id}", web::get().to(get_agent_with_db))
     })
     .bind(("0.0.0.0", 8080))?
     .run()
@@ -153,7 +156,7 @@ async fn sign_transaction(request: web::Json<SignRequest>) -> impl Responder {
     })
 }
 
-async fn verify_transaction(request: web::Json<VerifyRequest>) -> impl Responder {
+async fn verify_transaction_standalone(request: web::Json<VerifyRequest>) -> impl Responder {
     info!("Verifying transaction for agent: {}", request.agent_id);
 
     let db = match Database::connect().await {
@@ -277,7 +280,7 @@ async fn verify_transaction(request: web::Json<VerifyRequest>) -> impl Responder
     })
 }
 
-async fn get_public_key(agent_id: web::Path<String>) -> impl Responder {
+async fn get_public_key_standalone(agent_id: web::Path<String>) -> impl Responder {
     let db = match Database::connect().await {
         Ok(db) => db,
         Err(e) => {
@@ -299,3 +302,80 @@ async fn get_public_key(agent_id: web::Path<String>) -> impl Responder {
         "public_key": agent.public_key
     }))
 }
+
+// Standalone agents API handlers with DB connection
+use crate::api::responses::{AgentResponse, ErrorResponse};
+
+async fn list_agents_with_db() -> impl Responder {
+    let db = match Database::connect().await {
+        Ok(db) => db,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "database_error",
+                "message": format!("Failed to connect to database: {}", e)
+            }));
+        }
+    };
+
+    match db.list_agents().await {
+        Ok(agents) => {
+            let response: Vec<AgentResponse> = agents
+                .into_iter()
+                .map(|agent| AgentResponse {
+                    id: agent.id,
+                    provider_id: agent.provider_id.to_string(),
+                    model_version: agent.model_version,
+                    tier: agent.tier.to_string(),
+                    status: agent.status,
+                    spending_limit_daily: agent.spending_limit_daily.to_f64().unwrap_or(0.0),
+                    spending_limit_per_tx: agent.spending_limit_per_tx.to_f64().unwrap_or(0.0),
+                    created_at: agent.created_at.to_rfc3339(),
+                    expires_at: agent.expires_at.to_rfc3339(),
+                })
+                .collect();
+            HttpResponse::Ok().json(response)
+        }
+        Err(_) => {
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "database_error",
+                "message": "Failed to fetch agents"
+            }))
+        }
+    }
+}
+
+async fn get_agent_with_db(agent_id: web::Path<String>) -> impl Responder {
+    let db = match Database::connect().await {
+        Ok(db) => db,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "database_error",
+                "message": format!("Failed to connect to database: {}", e)
+            }));
+        }
+    };
+
+    match db.get_agent(&agent_id).await {
+        Ok(agent) => {
+            let response = AgentResponse {
+                id: agent.id,
+                provider_id: agent.provider_id.to_string(),
+                model_version: agent.model_version,
+                tier: agent.tier.to_string(),
+                status: agent.status,
+                spending_limit_daily: agent.spending_limit_daily.to_f64().unwrap_or(0.0),
+                spending_limit_per_tx: agent.spending_limit_per_tx.to_f64().unwrap_or(0.0),
+                created_at: agent.created_at.to_rfc3339(),
+                expires_at: agent.expires_at.to_rfc3339(),
+            };
+            HttpResponse::Ok().json(response)
+        }
+        Err(_) => {
+            HttpResponse::NotFound().json(serde_json::json!({
+                "error": "agent_not_found",
+                "message": format!("Agent {} not found", agent_id)
+            }))
+        }
+    }
+}
+
