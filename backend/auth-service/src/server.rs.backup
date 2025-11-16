@@ -1,0 +1,235 @@
+use axum::{
+    extract::Json,
+    http::StatusCode,
+    routing::{get, post},
+    Router,
+};
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use tracing::info;
+
+use crate::crypto::{signing::TransactionSigner, verification::TransactionVerifier};
+use crate::db::postgres::Database;
+use crate::models::transaction::TransactionRequest;
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SignRequest {
+    pub agent_id: String,
+    pub amount: f64,
+    pub currency: String,
+    pub merchant_id: String,
+    pub nonce: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SignResponse {
+    pub agent_id: String,
+    pub amount: f64,
+    pub currency: String,
+    pub merchant_id: String,
+    pub nonce: String,
+    pub timestamp: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct VerifyRequest {
+    pub agent_id: String,
+    pub amount: f64,
+    pub currency: String,
+    pub merchant_id: String,
+    pub nonce: String,
+    pub timestamp: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifyResponse {
+    pub authenticated: bool,
+    pub authorized: bool,
+    pub agent_id: String,
+    pub checks: CheckResults,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CheckResults {
+    pub signature_valid: bool,
+    pub nonce_fresh: bool,
+    pub within_spending_limit: bool,
+    pub agent_active: bool,
+    pub certificate_valid: bool,
+}
+
+pub async fn run_server() -> anyhow::Result<()> {
+    info!("Starting HTTP server...");
+
+    let app = Router::new()
+        .route("/health", get(health_check))
+        .route("/auth/sign", post(sign_transaction))
+        .route("/auth/verify", post(verify_transaction));
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    info!("Auth service listening on {}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+async fn health_check() -> &'static str {
+    "Auth Service is running"
+}
+
+async fn sign_transaction(
+    Json(request): Json<SignRequest>,
+) -> Result<Json<SignResponse>, (StatusCode, String)> {
+    info!("Signing transaction for agent: {}", request.agent_id);
+
+    // Load agent's private key from file
+    let private_key_file = format!("{}.private.key", request.agent_id);
+    let private_key_b64 = std::fs::read_to_string(&private_key_file)
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Private key not found: {}", e)))?;
+    
+    let private_key_bytes = base64::decode(private_key_b64.trim())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid key format: {}", e)))?;
+
+    // Parse timestamp
+    let timestamp = chrono::DateTime::parse_from_rfc3339(&request.timestamp)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid timestamp: {}", e)))?
+        .with_timezone(&chrono::Utc);
+
+    // Create transaction request
+    let tx_request = TransactionRequest {
+        agent_id: request.agent_id.clone(),
+        merchant_id: request.merchant_id.clone(),
+        amount: request.amount,
+        currency: request.currency.clone(),
+        nonce: request.nonce.clone(),
+        timestamp,
+    };
+
+    // Sign the transaction
+    let signer = TransactionSigner::from_bytes(&private_key_bytes)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Signer error: {}", e)))?;
+    
+    let signature = signer.sign_transaction(&tx_request)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Signing error: {}", e)))?;
+
+    info!("Transaction signed successfully");
+
+    Ok(Json(SignResponse {
+        agent_id: request.agent_id,
+        amount: request.amount,
+        currency: request.currency,
+        merchant_id: request.merchant_id,
+        nonce: request.nonce,
+        timestamp: request.timestamp,
+        signature: base64::encode(&signature),
+    }))
+}
+
+async fn verify_transaction(
+    Json(request): Json<VerifyRequest>,
+) -> Result<Json<VerifyResponse>, (StatusCode, String)> {
+    info!("Verifying transaction for agent: {}", request.agent_id);
+
+    // Connect to database
+    let db = Database::connect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Database error: {}", e)))?;
+
+    // Get agent from database
+    let agent = db.get_agent(&request.agent_id)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Agent not found: {}", e)))?;
+
+    // Initialize check results
+    let mut checks = CheckResults {
+        signature_valid: false,
+        nonce_fresh: false,
+        within_spending_limit: false,
+        agent_active: false,
+        certificate_valid: false,
+    };
+
+    // Check nonce (prevents replay attacks)
+    checks.nonce_fresh = db.check_and_store_nonce(&request.agent_id, &request.nonce)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Nonce check error: {}", e)))?;
+
+    if !checks.nonce_fresh {
+        return Ok(Json(VerifyResponse {
+            authenticated: false,
+            authorized: false,
+            agent_id: request.agent_id,
+            checks,
+            reason: Some("Nonce already used - replay attack detected".to_string()),
+        }));
+    }
+
+    // Parse timestamp
+    let timestamp = chrono::DateTime::parse_from_rfc3339(&request.timestamp)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid timestamp: {}", e)))?
+        .with_timezone(&chrono::Utc);
+
+    // Create transaction request
+    let tx_request = TransactionRequest {
+        agent_id: request.agent_id.clone(),
+        merchant_id: request.merchant_id.clone(),
+        amount: request.amount,
+        currency: request.currency.clone(),
+        nonce: request.nonce.clone(),
+        timestamp,
+    };
+
+    // Verify signature
+    let signature = base64::decode(&request.signature)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid signature format: {}", e)))?;
+    
+    let public_key_bytes = base64::decode(&agent.public_key)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid public key: {}", e)))?;
+    
+    let verifier = TransactionVerifier::from_bytes(&public_key_bytes)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Verifier error: {}", e)))?;
+    
+    checks.signature_valid = verifier.verify_transaction(&tx_request, &signature)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Verification error: {}", e)))?;
+
+    // Check spending limit
+    let agent_limit = agent.spending_limit_per_tx.to_f64().unwrap_or(0.0);
+    checks.within_spending_limit = request.amount <= agent_limit;
+
+    // Check agent status
+    checks.agent_active = agent.status == "active";
+
+    // Check expiration
+    checks.certificate_valid = chrono::Utc::now() < agent.expires_at;
+
+    // Determine authentication and authorization
+    let authenticated = checks.signature_valid && checks.nonce_fresh;
+    let authorized = authenticated 
+        && checks.within_spending_limit 
+        && checks.agent_active 
+        && checks.certificate_valid;
+
+    let reason = if !authenticated {
+        Some("Authentication failed".to_string())
+    } else if !authorized {
+        Some("Authorization checks failed".to_string())
+    } else {
+        None
+    };
+
+    info!("Verification complete: authenticated={}, authorized={}", authenticated, authorized);
+
+    Ok(Json(VerifyResponse {
+        authenticated,
+        authorized,
+        agent_id: request.agent_id,
+        checks,
+        reason,
+    }))
+}
