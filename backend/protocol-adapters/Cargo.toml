@@ -1,0 +1,25 @@
+[package]
+name = "protocol-adapters"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+security-gateway = { path = "../security-gateway" }
+reqwest = { version = "0.11", features = ["json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "rust_decimal"] }
+rust_decimal = { version = "1.36", features = ["db-postgres"] }
+tower-http = { version = "0.5", features = ["cors"] }
+jsonwebtoken = "9.2"
+bcrypt = "0.15"
+chrono = "0.4"
+async-trait = "0.1"
+base64 = "0.22"
+ed25519-dalek = "2.0"

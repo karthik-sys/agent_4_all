@@ -1,0 +1,186 @@
+use axum::{
+    body::Body,
+    extract::State,
+    http::{Request, Response, StatusCode},
+    middleware::{self, Next},
+    routing::{any, delete, get, post, put},
+    Router,
+};
+use security_gateway::{Database, SecurityGateway};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tracing::{error, info};
+
+mod handlers;
+mod interceptors;
+mod api;
+
+use interceptors::{ACPInterceptor, MCPInterceptor, ProtocolInterceptor};
+
+pub struct AppState {
+    pub gateway: Arc<SecurityGateway>,
+    pub interceptors: Vec<Arc<dyn ProtocolInterceptor>>,
+    pub db: Arc<Database>,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+    
+    info!("🚀 Starting Protocol Adapters Service with API...");
+    
+    let gateway = Arc::new(SecurityGateway::new().await?);
+    let db = Arc::new(Database::connect().await?);
+    
+    let interceptors: Vec<Arc<dyn ProtocolInterceptor>> = vec![
+        Arc::new(MCPInterceptor::new()),
+        Arc::new(ACPInterceptor::new()),
+    ];
+    
+    let state = Arc::new(AppState {
+        gateway,
+        interceptors,
+        db,
+    });
+    
+    let app = Router::new()
+        .route("/health", get(health_check))
+        // API routes
+        .route("/api/v1/agents/register", post(api::register_agent))
+        .route("/api/v1/agents", get(api::list_agents))
+        .route("/api/v1/agents/:id", get(api::get_agent))
+        .route("/api/v1/agents/:id", delete(api::delete_agent))
+        .route("/api/v1/agents/:id/transactions", get(api::get_agent_transactions))
+        .route("/api/v1/agents/:id/limits", put(api::update_agent_limits))
+        // Legacy handler
+        .route("/acp/openai/process", post(handlers::process_openai_payment))
+        // Catch-all for MCP/ACP interceptors
+        .fallback(any(handle_fallback))
+        .layer(middleware::from_fn_with_state(state.clone(), request_middleware))
+        .with_state(state);
+    
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8081));
+    info!("✅ Server listening on {}", addr);
+    info!("✅ API: http://localhost:8081/api/v1");
+    info!("✅ Health: http://localhost:8081/health");
+    
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    
+    Ok(())
+}
+
+async fn health_check() -> &'static str {
+    "Protocol Adapters Service with API is running"
+}
+
+async fn handle_fallback(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+) -> Result<Response<Body>, StatusCode> {
+    let path = request.uri().path();
+    info!("🔍 Fallback handler checking: {}", path);
+    
+    // Try to find matching interceptor
+    for interceptor in &state.interceptors {
+        if interceptor.can_handle(&request) {
+            info!("✅ {} interceptor matched!", interceptor.protocol_name());
+            return handle_intercepted_request(state.clone(), request, interceptor.clone()).await;
+        }
+    }
+    
+    info!("❌ No interceptor matched");
+    Err(StatusCode::NOT_FOUND)
+}
+
+async fn request_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response<Body>, StatusCode> {
+    let path = request.uri().path();
+    let method = request.method();
+    
+    info!("📨 {} {}", method, path);
+    
+    // API routes need auth
+    if path.starts_with("/api/v1") {
+        let api_key = request.headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok());
+        
+        if api_key != Some("dev_api_key_12345") {
+            info!("❌ Unauthorized - missing or invalid API key");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        info!("✅ API key validated");
+    }
+    
+    Ok(next.run(request).await)
+}
+
+async fn handle_intercepted_request(
+    state: Arc<AppState>,
+    request: Request<Body>,
+    interceptor: Arc<dyn ProtocolInterceptor>,
+) -> Result<Response<Body>, StatusCode> {
+    // Extract security context
+    let context = match interceptor.extract_security_context(request).await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            error!("Failed to extract security context: {}", e);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+    
+    // Verify through security gateway
+    let verification = match state.gateway.verify(&context).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Security verification error: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    
+    // Log transaction BEFORE attempting forward
+    let log_result = state.gateway.log_transaction(&context, &verification).await;
+    if let Err(e) = log_result {
+        error!("Failed to log transaction: {}", e);
+    } else {
+        info!("✅ Transaction logged to database");
+    }
+    
+    if !verification.approved {
+        info!("Transaction DECLINED: {}", verification.reason.as_deref().unwrap_or("Unknown"));
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    info!("Transaction APPROVED (risk score: {:.1})", verification.risk_score);
+    
+    // Try to forward (this might fail, but transaction is already logged)
+    let reconstructed_request = reconstruct_request(&context)?;
+    match interceptor.forward_request(reconstructed_request, &context).await {
+        Ok(resp) => {
+            info!("✅ Successfully forwarded to merchant");
+            Ok(resp)
+        }
+        Err(e) => {
+            error!("Failed to forward request: {}", e);
+            // Transaction is logged, just return error about forwarding
+            Err(StatusCode::BAD_GATEWAY)
+        }
+    }
+}
+
+fn reconstruct_request(context: &security_gateway::SecurityContext) -> Result<Request<Body>, StatusCode> {
+    let body = serde_json::to_vec(&context.raw_request)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    let request = Request::builder()
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(request)
+}

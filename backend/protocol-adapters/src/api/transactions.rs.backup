@@ -1,0 +1,299 @@
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use std::sync::Arc;
+use tracing::{error, info};
+use uuid::Uuid;
+
+use crate::AppState;
+
+#[derive(Debug, Serialize)]
+pub struct TransactionResponse {
+    pub id: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub agent_owner_email: String,
+    pub agent_owner_name: String,
+    pub merchant_id: String,
+    pub merchant_name: String,
+    pub amount: f64,
+    pub currency: String,
+    pub status: String,
+    pub checkout_url: String,
+    pub items: Option<serde_json::Value>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateTransactionRequest {
+    pub agent_id: String,
+    pub merchant_id: String,
+    pub amount: f64,
+    pub checkout_url: String,
+    pub items: Option<serde_json::Value>,
+}
+
+// Get transactions for a merchant
+pub async fn get_merchant_transactions(
+    State(state): State<Arc<AppState>>,
+    Path(merchant_id): Path<String>,
+) -> Result<Json<Vec<TransactionResponse>>, StatusCode> {
+    info!("📊 Fetching transactions for merchant: {}", merchant_id);
+
+    let merchant_uuid = Uuid::parse_str(&merchant_id)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let rows = sqlx::query(
+        "SELECT 
+            t.id,
+            t.agent_id::text,
+            t.amount,
+            t.currency,
+            t.status,
+            t.checkout_url,
+            t.items,
+            t.created_at,
+            t.completed_at,
+            a.name as agent_name,
+            u.email as owner_email,
+            u.full_name as owner_name,
+            m.merchant_name
+         FROM transactions t
+         JOIN agents a ON t.agent_id = a.id
+         JOIN users u ON a.user_id = u.id
+         JOIN merchants m ON t.merchant_id = m.id
+         WHERE t.merchant_id = $1
+         ORDER BY t.created_at DESC
+         LIMIT 100"
+    )
+    .bind(merchant_uuid)
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch merchant transactions: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let transactions: Vec<TransactionResponse> = rows
+        .iter()
+        .map(|row| {
+            let created_at: chrono::NaiveDateTime = row.get("created_at");
+            let completed_at: Option<chrono::NaiveDateTime> = row.get("completed_at");
+            
+            TransactionResponse {
+                id: row.get::<Uuid, _>("id").to_string(),
+                agent_id: row.get("agent_id"),
+                agent_name: row.get("agent_name"),
+                agent_owner_email: row.get("owner_email"),
+                agent_owner_name: row.get("owner_name"),
+                merchant_id: merchant_id.clone(),
+                merchant_name: row.get("merchant_name"),
+                amount: row.get("amount"),
+                currency: row.get("currency"),
+                status: row.get("status"),
+                checkout_url: row.get("checkout_url"),
+                items: row.get("items"),
+                created_at: created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                completed_at: completed_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+            }
+        })
+        .collect();
+
+    info!("✅ Found {} transactions", transactions.len());
+    Ok(Json(transactions))
+}
+
+// Create a new transaction (when agent makes a purchase)
+pub async fn create_transaction(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateTransactionRequest>,
+) -> Result<Json<TransactionResponse>, StatusCode> {
+    info!("🛒 Creating transaction for agent: {} at merchant: {}", req.agent_id, req.merchant_id);
+
+    let merchant_uuid = Uuid::parse_str(&req.merchant_id)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    // Verify agent exists and is active
+    let agent_row = sqlx::query(
+        "SELECT id, name, user_id, status FROM agents WHERE id = $1"
+    )
+    .bind(&req.agent_id)
+    .fetch_optional(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch agent: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or_else(|| {
+        error!("Agent not found: {}", req.agent_id);
+        StatusCode::NOT_FOUND
+    })?;
+
+    let agent_status: String = agent_row.get("status");
+    if agent_status != "active" {
+        error!("Agent not active: {}", req.agent_id);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Check if merchant has blocked this agent
+    let blocked = sqlx::query(
+        "SELECT id FROM merchant_agent_blocks 
+         WHERE merchant_id = $1 AND agent_id = $2"
+    )
+    .bind(merchant_uuid)
+    .bind(&req.agent_id)
+    .fetch_optional(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to check block status: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if blocked.is_some() {
+        error!("Agent {} is blocked by merchant {}", req.agent_id, req.merchant_id);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Create transaction
+    let transaction_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO transactions 
+         (id, agent_id, merchant_id, amount, currency, status, checkout_url, items, created_at)
+         VALUES ($1, $2, $3, $4, 'USD', 'pending', $5, $6, NOW())"
+    )
+    .bind(transaction_id)
+    .bind(&req.agent_id)
+    .bind(merchant_uuid)
+    .bind(req.amount)
+    .bind(&req.checkout_url)
+    .bind(&req.items)
+    .execute(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to create transaction: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Fetch full transaction details with joins
+    let full_transaction = sqlx::query(
+        "SELECT 
+            t.id,
+            t.agent_id::text,
+            t.amount,
+            t.currency,
+            t.status,
+            t.checkout_url,
+            t.items,
+            t.created_at,
+            t.completed_at,
+            a.name as agent_name,
+            u.email as owner_email,
+            u.full_name as owner_name,
+            m.merchant_name
+         FROM transactions t
+         JOIN agents a ON t.agent_id = a.id
+         JOIN users u ON a.user_id = u.id
+         JOIN merchants m ON t.merchant_id = m.id
+         WHERE t.id = $1"
+    )
+    .bind(transaction_id)
+    .fetch_one(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch created transaction: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let created_at: chrono::NaiveDateTime = full_transaction.get("created_at");
+    let completed_at: Option<chrono::NaiveDateTime> = full_transaction.get("completed_at");
+
+    let transaction = TransactionResponse {
+        id: full_transaction.get::<Uuid, _>("id").to_string(),
+        agent_id: full_transaction.get("agent_id"),
+        agent_name: full_transaction.get("agent_name"),
+        agent_owner_email: full_transaction.get("owner_email"),
+        agent_owner_name: full_transaction.get("owner_name"),
+        merchant_id: req.merchant_id,
+        merchant_name: full_transaction.get("merchant_name"),
+        amount: full_transaction.get("amount"),
+        currency: full_transaction.get("currency"),
+        status: full_transaction.get("status"),
+        checkout_url: full_transaction.get("checkout_url"),
+        items: full_transaction.get("items"),
+        created_at: created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+        completed_at: completed_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+    };
+
+    info!("✅ Transaction created: {}", transaction_id);
+    Ok(Json(transaction))
+}
+
+// Get all transactions (admin only)
+pub async fn list_all_transactions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<TransactionResponse>>, StatusCode> {
+    info!("📊 Fetching all transactions (admin)");
+
+    let rows = sqlx::query(
+        "SELECT 
+            t.id,
+            t.agent_id::text,
+            t.merchant_id,
+            t.amount,
+            t.currency,
+            t.status,
+            t.checkout_url,
+            t.items,
+            t.created_at,
+            t.completed_at,
+            a.name as agent_name,
+            u.email as owner_email,
+            u.full_name as owner_name,
+            m.merchant_name
+         FROM transactions t
+         JOIN agents a ON t.agent_id = a.id
+         JOIN users u ON a.user_id = u.id
+         JOIN merchants m ON t.merchant_id = m.id
+         ORDER BY t.created_at DESC
+         LIMIT 1000"
+    )
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch all transactions: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let transactions: Vec<TransactionResponse> = rows
+        .iter()
+        .map(|row| {
+            let created_at: chrono::NaiveDateTime = row.get("created_at");
+            let completed_at: Option<chrono::NaiveDateTime> = row.get("completed_at");
+            
+            TransactionResponse {
+                id: row.get::<Uuid, _>("id").to_string(),
+                agent_id: row.get("agent_id"),
+                agent_name: row.get("agent_name"),
+                agent_owner_email: row.get("owner_email"),
+                agent_owner_name: row.get("owner_name"),
+                merchant_id: row.get::<Uuid, _>("merchant_id").to_string(),
+                merchant_name: row.get("merchant_name"),
+                amount: row.get("amount"),
+                currency: row.get("currency"),
+                status: row.get("status"),
+                checkout_url: row.get("checkout_url"),
+                items: row.get("items"),
+                created_at: created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                completed_at: completed_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+            }
+        })
+        .collect();
+
+    info!("✅ Found {} transactions", transactions.len());
+    Ok(Json(transactions))
+}
