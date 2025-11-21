@@ -147,3 +147,40 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
 CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at DESC);
+
+-- Agent Teams for organizing agents
+CREATE TABLE IF NOT EXISTS agent_teams (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    team_name VARCHAR(255) NOT NULL,
+    team_color VARCHAR(7) DEFAULT '#3B82F6',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Team memberships
+CREATE TABLE IF NOT EXISTS agent_team_members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    team_id UUID NOT NULL REFERENCES agent_teams(id) ON DELETE CASCADE,
+    agent_id VARCHAR(255) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    joined_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(team_id, agent_id)
+);
+
+-- Agent evaluation results
+CREATE TABLE IF NOT EXISTS agent_evaluations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    evaluation_session_id UUID NOT NULL,
+    agent_id VARCHAR(255) NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    item_description TEXT NOT NULL,
+    predicted_price DECIMAL(10,2),
+    predicted_merchant_id UUID REFERENCES merchants(id),
+    predicted_risk_score INT DEFAULT 0,
+    was_selected BOOLEAN DEFAULT FALSE,
+    evaluation_details JSONB,
+    evaluated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_evaluations_session ON agent_evaluations(evaluation_session_id);
+CREATE INDEX IF NOT EXISTS idx_evaluations_agent ON agent_evaluations(agent_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_team ON agent_team_members(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_agent ON agent_team_members(agent_id);

@@ -11,6 +11,8 @@ import MerchantRegister from './components/MerchantRegister';
 import MerchantDashboard from './components/MerchantDashboard';
 import MerchantProtectedRoute from './components/MerchantProtectedRoute';
 import AdminDashboard from './components/AdminDashboard';
+import NetworkGraphView from './components/NetworkGraphView';
+
 
 const ProtectedRoute = ({ children }) => {
   const token = localStorage.getItem('token');
@@ -44,6 +46,14 @@ function App() {
           element={
             <ProtectedRoute>
               <AgentList />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/network" 
+          element={
+            <ProtectedRoute>
+              <NetworkGraphView />
             </ProtectedRoute>
           } 
         />

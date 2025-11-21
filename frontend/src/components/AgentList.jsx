@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { agentService } from '../services/api';
-import { Bot, Plus, Search, TrendingUp, DollarSign, Activity, AlertCircle, LogOut, User } from 'lucide-react';
+import { Bot, Plus, Search, TrendingUp, DollarSign, Activity, AlertCircle, LogOut, User, Map } from 'lucide-react';
 
 const AgentList = () => {
   const navigate = useNavigate();
@@ -102,7 +102,7 @@ const AgentList = () => {
         </div>
       </div>
     );
-  }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 dark:from-gray-900 dark:to-gray-800 py-8 px-4">
@@ -124,10 +124,19 @@ const AgentList = () => {
               </span>
             </div>
             
+            {/* Network Map Button */}
+            <button
+              onClick={() => navigate('/network')}
+              className="bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-3 rounded-xl font-bold hover:from-blue-700 hover:to-purple-700 transition-all shadow-lg flex items-center space-x-2"
+            >
+              <Map className="h-5 w-5" />
+              <span>Network Map</span>
+            </button>
+            
             {/* Register New Agent Button */}
             <button
               onClick={() => navigate('/register-agent')}
-              className="bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-3 rounded-xl font-bold hover:from-blue-700 hover:to-purple-700 transition-all shadow-lg flex items-center space-x-2"
+              className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-3 rounded-xl font-bold hover:from-purple-700 hover:to-pink-700 transition-all shadow-lg flex items-center space-x-2"
             >
               <Plus className="h-5 w-5" />
               <span>Register Agent</span>

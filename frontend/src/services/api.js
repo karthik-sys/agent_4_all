@@ -248,3 +248,52 @@ export const adminLedgerService = {
     return response.data;
   },
 };
+
+// Team Management
+export const teamService = {
+  createTeam: async (teamData) => {
+    const response = await api.post('/teams', teamData);
+    return response.data;
+  },
+
+  listTeams: async () => {
+    const response = await api.get('/teams');
+    return response.data;
+  },
+
+  getTeamDetails: async (teamId) => {
+    const response = await api.get(`/teams/${teamId}`);
+    return response.data;
+  },
+
+  deleteTeam: async (teamId) => {
+    const response = await api.delete(`/teams/${teamId}`);
+    return response.data;
+  },
+
+  addMember: async (teamId, agentId) => {
+    const response = await api.post(`/teams/${teamId}/members`, { agent_id: agentId });
+    return response.data;
+  },
+
+  removeMember: async (teamId, agentId) => {
+    const response = await api.delete(`/teams/${teamId}/members/${agentId}`);
+    return response.data;
+  },
+};
+
+// Network & Evaluation
+export const networkService = {
+  getNetworkGraph: async () => {
+    const response = await api.get('/network/graph');
+    return response.data;
+  },
+
+  evaluateAgents: async (itemDescription, agentIds = null) => {
+    const response = await api.post('/evaluate', {
+      item_description: itemDescription,
+      agent_ids: agentIds,
+    });
+    return response.data;
+  },
+};

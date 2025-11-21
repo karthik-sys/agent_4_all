@@ -1,0 +1,354 @@
+use axum::{
+    extract::{Path, State},
+    http::{StatusCode, HeaderMap},
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use std::sync::Arc;
+use tracing::{error, info};
+use uuid::Uuid;
+
+use crate::AppState;
+
+#[derive(Debug, Deserialize)]
+pub struct EvaluateRequest {
+    pub item_description: String,
+    pub agent_ids: Option<Vec<String>>, // If None, use all agents
+}
+
+#[derive(Debug, Serialize)]
+pub struct EvaluationResponse {
+    pub session_id: String,
+    pub evaluations: Vec<AgentEvaluationResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentEvaluationResult {
+    pub agent_id: String,
+    pub agent_name: String,
+    pub foundational_model: String,
+    pub predicted_price: f64,
+    pub predicted_merchant_id: String,
+    pub predicted_merchant_name: String,
+    pub predicted_risk_score: i32,
+    pub is_recommended: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NetworkGraphResponse {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub stats: NetworkStats,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphNode {
+    pub id: String,
+    pub node_type: String, // "agent" or "merchant"
+    pub label: String,
+    pub foundational_model: Option<String>,
+    pub tier: Option<String>,
+    pub team_id: Option<String>,
+    pub team_color: Option<String>,
+    pub stats: NodeStats,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NodeStats {
+    pub transaction_count: i64,
+    pub win_count: i64,
+    pub avg_price: f64,
+    pub risk_score: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    pub edge_type: String, // "team" or "transaction"
+    pub weight: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NetworkStats {
+    pub total_agents: i64,
+    pub total_teams: i64,
+    pub total_transactions: i64,
+    pub total_evaluations: i64,
+}
+
+pub async fn evaluate_agents(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<EvaluateRequest>,
+) -> Result<Json<EvaluationResponse>, StatusCode> {
+    let claims = crate::auth::handlers::extract_user_from_headers(&headers)?;
+    let user_id = Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    info!("🎯 Evaluating agents for item: {}", req.item_description);
+
+    let session_id = Uuid::new_v4();
+
+    // Get agents to evaluate (either specified or all user's agents)
+    let agent_ids = if let Some(ids) = req.agent_ids {
+        ids
+    } else {
+        let rows = sqlx::query("SELECT id FROM agents WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_all(&state.db.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        rows.iter().map(|row| row.get("id")).collect()
+    };
+
+    if agent_ids.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Get all approved merchants for evaluation
+    let merchants = sqlx::query(
+        "SELECT id, merchant_name FROM merchants WHERE status = 'approved' LIMIT 5"
+    )
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut evaluations = Vec::new();
+
+    // Simulate agent evaluation (in real implementation, call agent AI)
+    for agent_id in agent_ids {
+        let agent_row = sqlx::query(
+            "SELECT agent_name, foundational_model, risk_score FROM agents WHERE id = $1"
+        )
+        .bind(&agent_id)
+        .fetch_optional(&state.db.pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if let Some(agent) = agent_row {
+            // Simulate price prediction (random for demo, replace with AI call)
+            let base_price = 899.0;
+            let model: String = agent.get("foundational_model");
+            let price_variance = match model.as_str() {
+                "gpt-4" => rand::random::<f64>() * 50.0,
+                "claude-sonnet-4" => rand::random::<f64>() * 30.0, // Claude better
+                "gemini-pro" => rand::random::<f64>() * 60.0,
+                _ => rand::random::<f64>() * 70.0,
+            };
+            
+            let predicted_price = base_price + price_variance;
+            let merchant = &merchants[rand::random::<usize>() % merchants.len()];
+            let risk_score: i32 = agent.get("risk_score");
+
+            // Store evaluation
+            sqlx::query(
+                "INSERT INTO agent_evaluations 
+                 (evaluation_session_id, agent_id, item_description, predicted_price, 
+                  predicted_merchant_id, predicted_risk_score, evaluated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, NOW())"
+            )
+            .bind(session_id)
+            .bind(&agent_id)
+            .bind(&req.item_description)
+            .bind(predicted_price)
+            .bind(merchant.get::<Uuid, _>("id"))
+            .bind(risk_score)
+            .execute(&state.db.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            evaluations.push(AgentEvaluationResult {
+                agent_id: agent_id.clone(),
+                agent_name: agent.get("agent_name"),
+                foundational_model: model,
+                predicted_price,
+                predicted_merchant_id: merchant.get::<Uuid, _>("id").to_string(),
+                predicted_merchant_name: merchant.get("merchant_name"),
+                predicted_risk_score: risk_score,
+                is_recommended: false, // Will mark winner after sorting
+            });
+        }
+    }
+
+    // Sort by price (lowest wins)
+    evaluations.sort_by(|a, b| a.predicted_price.partial_cmp(&b.predicted_price).unwrap());
+    
+    // Mark winner
+    if !evaluations.is_empty() {
+        evaluations[0].is_recommended = true;
+    }
+
+    info!("✅ Evaluated {} agents, winner: {}", evaluations.len(), evaluations[0].agent_name);
+
+    Ok(Json(EvaluationResponse {
+        session_id: session_id.to_string(),
+        evaluations,
+    }))
+}
+
+pub async fn get_network_graph(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<NetworkGraphResponse>, StatusCode> {
+    let claims = crate::auth::handlers::extract_user_from_headers(&headers)?;
+    let user_id = Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    info!("🗺️ Fetching network graph for user: {}", claims.email);
+
+    // Get all agents with stats
+    let agent_rows = sqlx::query(
+        "SELECT 
+            a.id, a.agent_name, a.foundational_model, a.tier, a.risk_score,
+            a.transaction_count,
+            COALESCE(t.id, NULL) as team_id,
+            COALESCE(t.team_color, NULL) as team_color,
+            COALESCE(COUNT(DISTINCT ae.id) FILTER (WHERE ae.was_selected = true), 0) as win_count,
+            COALESCE(AVG(ae.predicted_price), 0) as avg_price
+         FROM agents a
+         LEFT JOIN agent_team_members tm ON tm.agent_id = a.id
+         LEFT JOIN agent_teams t ON t.id = tm.team_id
+         LEFT JOIN agent_evaluations ae ON ae.agent_id = a.id
+         WHERE a.user_id = $1
+         GROUP BY a.id, a.agent_name, a.foundational_model, a.tier, a.risk_score, 
+                  a.transaction_count, t.id, t.team_color"
+    )
+    .bind(user_id)
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut nodes = Vec::new();
+    
+    for row in agent_rows {
+        nodes.push(GraphNode {
+            id: row.get("id"),
+            node_type: "agent".to_string(),
+            label: row.get("agent_name"),
+            foundational_model: row.get("foundational_model"),
+            tier: Some(row.get("tier")),
+            team_id: row.get::<Option<Uuid>, _>("team_id").map(|id| id.to_string()),
+            team_color: row.get("team_color"),
+            stats: NodeStats {
+                transaction_count: row.get("transaction_count"),
+                win_count: row.get("win_count"),
+                avg_price: row.get::<rust_decimal::Decimal, _>("avg_price").to_string().parse().unwrap_or(0.0),
+                risk_score: row.get("risk_score"),
+            },
+        });
+    }
+
+    // Get merchants that agents have transacted with
+    let merchant_rows = sqlx::query(
+        "SELECT DISTINCT m.id, m.merchant_name, COUNT(t.id) as tx_count
+         FROM merchants m
+         JOIN transactions t ON t.merchant_id = m.id
+         JOIN agents a ON a.id = t.agent_id
+         WHERE a.user_id = $1
+         GROUP BY m.id, m.merchant_name"
+    )
+    .bind(user_id)
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    for row in merchant_rows {
+        nodes.push(GraphNode {
+            id: row.get::<Uuid, _>("id").to_string(),
+            node_type: "merchant".to_string(),
+            label: row.get("merchant_name"),
+            foundational_model: None,
+            tier: None,
+            team_id: None,
+            team_color: None,
+            stats: NodeStats {
+                transaction_count: row.get("tx_count"),
+                win_count: 0,
+                avg_price: 0.0,
+                risk_score: 0,
+            },
+        });
+    }
+
+    // Build edges
+    let mut edges = Vec::new();
+
+    // Team edges
+    let team_edge_rows = sqlx::query(
+        "SELECT tm1.agent_id as source, tm2.agent_id as target, COUNT(*) as weight
+         FROM agent_team_members tm1
+         JOIN agent_team_members tm2 ON tm1.team_id = tm2.team_id AND tm1.agent_id < tm2.agent_id
+         JOIN agents a ON a.id = tm1.agent_id
+         WHERE a.user_id = $1
+         GROUP BY tm1.agent_id, tm2.agent_id"
+    )
+    .bind(user_id)
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    for row in team_edge_rows {
+        edges.push(GraphEdge {
+            source: row.get("source"),
+            target: row.get("target"),
+            edge_type: "team".to_string(),
+            weight: row.get("weight"),
+        });
+    }
+
+    // Transaction edges (agent -> merchant)
+    let tx_edge_rows = sqlx::query(
+        "SELECT t.agent_id as source, t.merchant_id as target, COUNT(*) as weight
+         FROM transactions t
+         JOIN agents a ON a.id = t.agent_id
+         WHERE a.user_id = $1
+         GROUP BY t.agent_id, t.merchant_id"
+    )
+    .bind(user_id)
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    for row in tx_edge_rows {
+        edges.push(GraphEdge {
+            source: row.get("source"),
+            target: row.get::<Uuid, _>("target").to_string(),
+            edge_type: "transaction".to_string(),
+            weight: row.get("weight"),
+        });
+    }
+
+    // Get stats
+    let stats_row = sqlx::query(
+        "SELECT 
+            COUNT(DISTINCT a.id) as total_agents,
+            COUNT(DISTINCT t.id) as total_teams,
+            COUNT(DISTINCT tx.id) as total_transactions,
+            COUNT(DISTINCT ae.id) as total_evaluations
+         FROM agents a
+         LEFT JOIN agent_team_members tm ON tm.agent_id = a.id
+         LEFT JOIN agent_teams t ON t.id = tm.team_id
+         LEFT JOIN transactions tx ON tx.agent_id = a.id
+         LEFT JOIN agent_evaluations ae ON ae.agent_id = a.id
+         WHERE a.user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_one(&state.db.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let stats = NetworkStats {
+        total_agents: stats_row.get("total_agents"),
+        total_teams: stats_row.get("total_teams"),
+        total_transactions: stats_row.get("total_transactions"),
+        total_evaluations: stats_row.get("total_evaluations"),
+    };
+
+    info!("✅ Network graph generated: {} nodes, {} edges", nodes.len(), edges.len());
+
+    Ok(Json(NetworkGraphResponse {
+        nodes,
+        edges,
+        stats,
+    }))
+}

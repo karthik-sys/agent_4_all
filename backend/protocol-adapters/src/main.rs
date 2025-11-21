@@ -67,10 +67,21 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/admin/block-requests/:id/approve", post(api::approve_block_request))
         .route("/api/v1/admin/block-requests/:id/deny", post(api::deny_block_request))
         .route("/api/v1/admin/blocks-ledger", get(api::get_all_blocks_ledger))
+
+        .route("/api/v1/teams", post(api::create_team))
+        .route("/api/v1/teams", get(api::list_teams))
+        .route("/api/v1/teams/:id", get(api::get_team_details))
+        .route("/api/v1/teams/:id", delete(api::delete_team))
+        .route("/api/v1/teams/:id/members", post(api::add_team_member))
+        .route("/api/v1/teams/:id/members/:agent_id", delete(api::remove_team_member))
+        
+        .route("/api/v1/network/graph", get(api::get_network_graph))
+        .route("/api/v1/evaluate", post(api::evaluate_agents))
         
         .layer(middleware::from_fn_with_state(state.clone(), request_middleware))
         .layer(CorsLayer::very_permissive())
         .with_state(state);
+        
     
     let addr = SocketAddr::from(([0, 0, 0, 0], 8081));
     info!("✅ Server listening on {}", addr);

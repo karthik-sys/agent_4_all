@@ -1579,6 +1579,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "jsonwebtoken",
+ "rand 0.8.5",
  "reqwest",
  "rust_decimal",
  "security-gateway",
