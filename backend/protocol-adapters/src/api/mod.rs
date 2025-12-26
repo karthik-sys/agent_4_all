@@ -5,6 +5,7 @@ mod agent_blocking_handlers;
 mod admin_block_ledger;
 
 pub use agents::{
+    list_all_agents_admin,
     create_agent,
     
     list_agents,

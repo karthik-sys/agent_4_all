@@ -70,7 +70,7 @@ export const agentService = {
   // For ADMIN ONLY - all agents
   getAllAgents: async () => {
     console.log('🔍 [ADMIN] Fetching ALL agents');
-    const response = await api.get('/agents');
+    const response = await api.get('/admin/agents');
     console.log('✅ [ADMIN] Received agents:', response.data.length);
     return response.data;
   },

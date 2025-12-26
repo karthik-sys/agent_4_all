@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/admin/block-requests/:id/approve", post(api::approve_block_request))
         .route("/api/v1/admin/block-requests/:id/deny", post(api::deny_block_request))
         .route("/api/v1/admin/blocks-ledger", get(api::get_all_blocks_ledger))
+        .route("/api/v1/admin/agents", get(api::list_all_agents_admin))
 
         .route("/api/v1/teams", post(api::create_team))
         .route("/api/v1/teams", get(api::list_teams))

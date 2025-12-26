@@ -23,12 +23,13 @@ const AdminAllAgents = () => {
   const loadAllAgents = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get('http://localhost:8081/api/v1/agents', {
+      const response = await axios.get('http://localhost:8081/api/v1/admin/agents', {
         headers: {
           Authorization: `Bearer ${token}`,
         },
       });
       console.log('Admin agents loaded:', response.data);
+      console.log("Setting agents state:", response.data);
       setAgents(response.data);
       setError(null);
     } catch (err) {

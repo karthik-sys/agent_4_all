@@ -286,3 +286,56 @@ pub async fn get_agent_transactions(
     info!("✅ Found {} transactions for agent", transactions.len());
     Ok(Json(transactions))
 }
+
+pub async fn list_all_agents_admin(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
+    let claims = crate::auth::handlers::extract_user_from_headers(&headers)?;
+    
+    if claims.role != "admin" {
+        error!("❌ Unauthorized: user is not admin");
+        return Err(StatusCode::FORBIDDEN);
+    }
+    
+    info!("📋 Admin fetching ALL agents across all users");
+
+    let rows = sqlx::query(
+        "SELECT a.id, a.agent_name, a.foundational_model, a.tier, a.status, a.balance,
+                a.remaining_balance, a.total_volume, a.transaction_count, a.risk_score, a.created_at,
+                u.email as user_email, u.full_name as user_name
+         FROM agents a
+         LEFT JOIN users u ON u.id = a.user_id
+         ORDER BY a.created_at DESC"
+    )
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch all agents: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let agents: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.get::<String, _>("id"),
+                "agent_name": row.get::<String, _>("agent_name"),
+                "foundational_model": row.get::<String, _>("foundational_model"),
+                "tier": row.get::<String, _>("tier"),
+                "status": row.get::<String, _>("status"),
+                "balance": row.get::<rust_decimal::Decimal, _>("balance").to_string().parse::<f64>().unwrap_or(0.0),
+                "remaining_balance": row.get::<rust_decimal::Decimal, _>("remaining_balance").to_string().parse::<f64>().unwrap_or(0.0),
+                "total_volume": row.get::<rust_decimal::Decimal, _>("total_volume").to_string().parse::<f64>().unwrap_or(0.0),
+                "transaction_count": row.get::<i64, _>("transaction_count"),
+                "risk_score": row.get::<i32, _>("risk_score"),
+                "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").format("%Y-%m-%d %H:%M:%S").to_string(),
+                "owner_email": row.get::<Option<String>, _>("user_email").unwrap_or_else(|| "Unknown".to_string()),
+                "owner_name": row.get::<Option<String>, _>("user_name").unwrap_or_else(|| "Unknown User".to_string()),
+            })
+        })
+        .collect();
+
+    info!("✅ Found {} total agents across all users", agents.len());
+    Ok(Json(agents))
+}
