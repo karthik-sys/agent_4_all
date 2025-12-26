@@ -12,6 +12,9 @@ import MerchantDashboard from './components/MerchantDashboard';
 import MerchantProtectedRoute from './components/MerchantProtectedRoute';
 import AdminDashboard from './components/AdminDashboard';
 import NetworkGraphView from './components/NetworkGraphView';
+import MultiGraphDashboard from './components/MultiGraphDashboard';
+import TeamGraphView from './components/TeamGraphView';
+import TeamHistoryView from './components/TeamHistoryView';
 
 
 const ProtectedRoute = ({ children }) => {
@@ -54,6 +57,30 @@ function App() {
           element={
             <ProtectedRoute>
               <NetworkGraphView />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/network/team/:teamId/history" 
+          element={
+            <ProtectedRoute>
+              <TeamHistoryView />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/network/team/:teamId" 
+          element={
+            <ProtectedRoute>
+              <TeamGraphView />
+            </ProtectedRoute>
+          } 
+        />
+        <Route 
+          path="/network/teams" 
+          element={
+            <ProtectedRoute>
+              <MultiGraphDashboard />
             </ProtectedRoute>
           } 
         />

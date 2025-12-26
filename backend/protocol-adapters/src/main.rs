@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/teams", post(api::create_team))
         .route("/api/v1/teams", get(api::list_teams))
         .route("/api/v1/teams/:id", get(api::get_team_details))
+        .route("/api/v1/teams/:id/evaluation-history", get(api::get_team_evaluation_history))
         .route("/api/v1/teams/:id", delete(api::delete_team))
         .route("/api/v1/teams/:id/members", post(api::add_team_member))
         .route("/api/v1/teams/:id/members/:agent_id", delete(api::remove_team_member))

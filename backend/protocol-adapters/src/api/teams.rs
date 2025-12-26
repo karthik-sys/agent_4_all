@@ -265,3 +265,118 @@ pub async fn delete_team(
     info!("✅ Team deleted");
     Ok(StatusCode::OK)
 }
+
+pub async fn get_team_evaluation_history(
+    State(state): State<Arc<AppState>>,
+    Path(team_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
+    let claims = crate::auth::handlers::extract_user_from_headers(&headers)?;
+    
+    info!("📜 Fetching evaluation history for team: {}", team_id);
+
+    // Get all evaluation sessions involving this team's agents
+    let rows = sqlx::query(
+        "SELECT DISTINCT 
+            ae.evaluation_session_id,
+            ae.item_description,
+            MIN(ae.evaluated_at) as evaluated_at
+         FROM agent_evaluations ae
+         JOIN agents a ON a.id = ae.agent_id
+         WHERE ae.team_id = $1 AND a.user_id = $2
+         GROUP BY ae.evaluation_session_id, ae.item_description
+         ORDER BY MIN(ae.evaluated_at) DESC
+         LIMIT 50"
+    )
+    .bind(uuid::Uuid::parse_str(&team_id).map_err(|_| StatusCode::BAD_REQUEST)?)
+    .bind(uuid::Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+    .fetch_all(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch evaluation history: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut sessions = Vec::new();
+
+    for row in rows {
+        let session_id: String = row.get::<uuid::Uuid, _>("evaluation_session_id").to_string();
+        
+        // Get all agent evaluations for this session
+        let agent_evals = sqlx::query(
+            "SELECT 
+                ae.agent_id,
+                a.agent_name,
+                a.foundational_model,
+                ae.predicted_price,
+                ae.predicted_merchant_id,
+                m.merchant_name as predicted_merchant_name,
+                ae.predicted_risk_score,
+                ae.was_selected
+             FROM agent_evaluations ae
+             JOIN agents a ON a.id = ae.agent_id
+             LEFT JOIN merchants m ON m.id = ae.predicted_merchant_id
+             WHERE ae.evaluation_session_id = $1
+             ORDER BY ae.predicted_price ASC"
+        )
+        .bind(uuid::Uuid::parse_str(&session_id).unwrap())
+        .fetch_all(&state.db.pool)
+        .await
+        .unwrap_or_default();
+
+        let agents: Vec<serde_json::Value> = agent_evals
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "agent_id": r.get::<String, _>("agent_id"),
+                    "agent_name": r.get::<String, _>("agent_name"),
+                    "foundational_model": r.get::<String, _>("foundational_model"),
+                    "predicted_price": r.get::<rust_decimal::Decimal, _>("predicted_price").to_string().parse::<f64>().unwrap_or(0.0),
+                    "predicted_merchant_name": r.get::<Option<String>, _>("predicted_merchant_name"),
+                    "predicted_risk_score": r.get::<i32, _>("predicted_risk_score"),
+                    "was_selected": r.get::<bool, _>("was_selected"),
+                })
+            })
+            .collect();
+
+        // Get winner and transaction if exists
+        let winner = agents.iter().find(|a| a["was_selected"].as_bool().unwrap_or(false));
+
+        let transaction = if let Some(w) = winner {
+            let tx_row = sqlx::query(
+                "SELECT t.amount, t.status, m.merchant_name
+                 FROM transactions t
+                 JOIN merchants m ON m.id = t.merchant_id
+                 WHERE t.agent_id::text = $1
+                 ORDER BY t.created_at DESC
+                 LIMIT 1"
+            )
+            .bind(w["agent_id"].as_str().unwrap())
+            .fetch_optional(&state.db.pool)
+            .await
+            .ok()
+            .flatten();
+
+            tx_row.map(|r| {
+                serde_json::json!({
+                    "amount": r.get::<rust_decimal::Decimal, _>("amount").to_string().parse::<f64>().unwrap_or(0.0),
+                    "merchant_name": r.get::<String, _>("merchant_name"),
+                    "status": r.get::<String, _>("status"),
+                })
+            })
+        } else {
+            None
+        };
+
+        sessions.push(serde_json::json!({
+            "session_id": session_id,
+            "item_description": row.get::<String, _>("item_description"),
+            "evaluated_at": row.get::<chrono::DateTime<chrono::Utc>, _>("evaluated_at").to_rfc3339(),
+            "agents": agents,
+            "winner": winner,
+            "transaction": transaction,
+        }));
+    }
+
+    Ok(Json(sessions))
+}

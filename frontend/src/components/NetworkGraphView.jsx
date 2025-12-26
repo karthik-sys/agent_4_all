@@ -212,25 +212,24 @@ const NetworkGraphView = () => {
         
         <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-400">
           <div className="flex items-center justify-between">
-            <span>🏆 Wins:</span>
-            <span className="font-bold text-yellow-600">{data.stats.win_count}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span>💰 Avg:</span>
-            <span className="font-bold">${data.stats.avg_price.toFixed(2)}</span>
-          </div>
-          {data.stats.last_item && (
-            <div className="flex items-center justify-between">
-              <span>📦 Last:</span>
-              <span className="font-bold text-green-600 truncate max-w-[100px]" title={data.stats.last_item}>
-                {data.stats.last_item}
-              </span>
-            </div>
-          )}
-          <div className="flex items-center justify-between">
             <span>📊 Txs:</span>
             <span className="font-bold">{data.stats.transaction_count}</span>
           </div>
+          {data.stats.last_transaction_amount && (
+            <>
+              <div className="flex items-center justify-between">
+                <span>💰 Last Paid:</span>
+                <span className="font-bold text-green-600">${data.stats.last_transaction_amount.toFixed(2)}</span>
+              </div>
+              {data.stats.last_transaction_item && (
+                <div className="pt-1 border-t border-gray-200 dark:border-gray-700">
+                  <span className="text-xs text-gray-500 truncate block max-w-[180px]" title={data.stats.last_transaction_item}>
+                    📦 {data.stats.last_transaction_item}
+                  </span>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
     );
@@ -282,6 +281,14 @@ const NetworkGraphView = () => {
             >
               <ArrowLeft className="h-5 w-5" />
               <span>Back to Dashboard</span>
+            </button>
+            <div className="h-8 w-px bg-gray-300 dark:bg-gray-600"></div>
+            <button
+              onClick={() => navigate('/network/teams')}
+              className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl font-bold hover:from-purple-700 hover:to-pink-700 transition-all flex items-center space-x-2"
+            >
+              <Users className="h-5 w-5" />
+              <span>View Team Graphs</span>
             </button>
             <div className="h-8 w-px bg-gray-300 dark:bg-gray-600"></div>
             <div className="flex items-center space-x-2">

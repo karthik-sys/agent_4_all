@@ -1,4 +1,5 @@
 use axum::{
+    extract::Query,
     extract::{Path, State},
     http::{StatusCode, HeaderMap},
     Json,
@@ -64,6 +65,8 @@ pub struct NodeStats {
     pub avg_price: f64,
     pub risk_score: i32,
     pub last_item: Option<String>,
+    pub last_transaction_amount: Option<f64>,
+    pub last_transaction_item: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -235,7 +238,9 @@ pub async fn get_network_graph(
                 ARRAY[]::text[]
             ) as team_colors,
             COALESCE(COUNT(DISTINCT ae.id) FILTER (WHERE ae.was_selected = true), 0) as win_count,
-            COALESCE(AVG(ae.predicted_price), 0) as avg_price
+            COALESCE(AVG(ae.predicted_price), 0) as avg_price,
+            (SELECT t.amount FROM transactions t WHERE t.agent_id = a.id ORDER BY t.created_at DESC LIMIT 1) as last_transaction_amount,
+            (SELECT t.description FROM transactions t WHERE t.agent_id = a.id ORDER BY t.created_at DESC LIMIT 1) as last_transaction_item
          FROM agents a
          LEFT JOIN agent_evaluations ae ON ae.agent_id = a.id
          WHERE a.user_id = $1
@@ -271,6 +276,9 @@ pub async fn get_network_graph(
                 avg_price: row.get::<rust_decimal::Decimal, _>("avg_price").to_string().parse().unwrap_or(0.0),
                 risk_score: row.get("risk_score"),
                 last_item: None,
+                last_transaction_amount: row.get::<Option<rust_decimal::Decimal>, _>("last_transaction_amount")
+                    .map(|d| d.to_string().parse().unwrap_or(0.0)),
+                last_transaction_item: row.get("last_transaction_item"),
             },
         });
     }
@@ -307,6 +315,8 @@ pub async fn get_network_graph(
                 avg_price: 0.0,
                 risk_score: 0,
                 last_item: None,
+                last_transaction_amount: None,
+                last_transaction_item: None,
             },
         });
     }

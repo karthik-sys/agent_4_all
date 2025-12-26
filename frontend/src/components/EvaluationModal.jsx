@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { X, ShoppingCart, TrendingDown, Shield, Store, CheckCircle, Loader, Users, Bot } from 'lucide-react';
 import { networkService, agentService, teamService } from '../services/api';
 
-const EvaluationModal = ({ isOpen, onClose, agents, teams, onExecute }) => {
+const EvaluationModal = ({ isOpen, onClose, agents, teams, preSelectedTeam, onExecute }) => {
   const [itemDescription, setItemDescription] = useState('');
   const [loading, setLoading] = useState(false);
   const [evaluations, setEvaluations] = useState(null);
   const [executing, setExecuting] = useState(false);
-  const [selectedScope, setSelectedScope] = useState('all'); // 'all', 'team-{id}', 'unassigned'
+  const [selectedScope, setSelectedScope] = useState(preSelectedTeam || 'all'); // 'all', 'team-{id}', 'unassigned'
 
   if (!isOpen) return null;
 
@@ -20,9 +20,10 @@ const EvaluationModal = ({ isOpen, onClose, agents, teams, onExecute }) => {
     setLoading(true);
     try {
       let agentIds = null;
+      let teamId = null;
       
       if (selectedScope.startsWith('team-')) {
-        const teamId = selectedScope.replace('team-', '');
+        teamId = selectedScope.replace('team-', '');
         // Get team details with members
         try {
           const teamDetails = await teamService.getTeamDetails(teamId);
@@ -41,7 +42,7 @@ const EvaluationModal = ({ isOpen, onClose, agents, teams, onExecute }) => {
         agentIds = null;
       }
       
-      const result = await networkService.evaluateAgents(itemDescription, agentIds);
+      const result = await networkService.evaluateAgents(itemDescription, agentIds, teamId);
       setEvaluations(result);
     } catch (err) {
       console.error('Evaluation failed:', err);
@@ -86,7 +87,7 @@ const EvaluationModal = ({ isOpen, onClose, agents, teams, onExecute }) => {
   const handleClose = () => {
     setItemDescription('');
     setEvaluations(null);
-    setSelectedScope('all');
+    setSelectedScope(preSelectedTeam || 'all');
     onClose();
   };
 

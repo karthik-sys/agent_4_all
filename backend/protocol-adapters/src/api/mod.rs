@@ -44,6 +44,7 @@ mod teams;
 mod network;
 
 pub use teams::{
+    get_team_evaluation_history,
     create_team,
     list_teams,
     get_team_details,

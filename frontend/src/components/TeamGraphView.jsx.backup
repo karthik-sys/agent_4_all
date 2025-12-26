@@ -1,0 +1,468 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import ReactFlow, {
+  MiniMap,
+  Controls,
+  Background,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+} from 'reactflow';
+import 'reactflow/dist/style.css';
+import { networkService, teamService } from '../services/api';
+import { Bot, Store, ArrowLeft, Target, Award, History, ChevronDown, ChevronUp } from 'lucide-react';
+import EvaluationModal from './EvaluationModal';
+
+const TeamGraphView = () => {
+  const navigate = useNavigate();
+  const { teamId } = useParams();
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [loading, setLoading] = useState(true);
+  const [team, setTeam] = useState(null);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [showEvaluationModal, setShowEvaluationModal] = useState(false);
+  const [transactions, setTransactions] = useState([]);
+  const [loadingTransactions, setLoadingTransactions] = useState(false);
+  const [showTransactions, setShowTransactions] = useState(false);
+
+  const loadTeamGraph = useCallback(async () => {
+    try {
+      // Load team details
+      const teamData = await teamService.getTeamDetails(teamId);
+      setTeam(teamData);
+
+      // Load full network
+      const networkData = await networkService.getNetworkGraph();
+      
+      // Filter to only show agents in this team
+      const teamAgentIds = teamData.members.map(m => m.agent_id);
+      
+      // Filter nodes - keep agents in team and their connected merchants
+      const agentNodes = networkData.nodes.filter(
+        node => node.node_type === 'agent' && teamAgentIds.includes(node.id)
+      );
+      
+      // Get merchants connected to these agents via transaction edges
+      const merchantIds = new Set();
+      networkData.edges.forEach(edge => {
+        if (teamAgentIds.includes(edge.source) && edge.edge_type === 'transaction') {
+          merchantIds.add(edge.target);
+        }
+      });
+      
+      const merchantNodes = networkData.nodes.filter(
+        node => node.node_type === 'merchant' && merchantIds.has(node.id)
+      );
+      
+      const filteredNodes = [...agentNodes, ...merchantNodes];
+      
+      // Convert to React Flow format
+      const flowNodes = filteredNodes.map((node, index) => ({
+        id: node.id,
+        type: node.node_type === 'agent' ? 'agentNode' : 'merchantNode',
+        position: calculatePosition(index, filteredNodes.length),
+        data: {
+          label: node.label,
+          foundational_model: node.foundational_model,
+          tier: node.tier,
+          team_color: teamData.team_color,
+          stats: node.stats,
+          node_type: node.node_type,
+        },
+      }));
+
+      // Convert filtered nodes to React Flow format first
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      // Create a set of valid node IDs from flowNodes
+      const validNodeIds = new Set(flowNodes.map(n => n.id));
+      
+      // Filter edges - only edges where BOTH nodes exist in our filtered set
+      const filteredEdges = networkData.edges.filter(
+        edge => validNodeIds.has(edge.source) && validNodeIds.has(edge.target)
+      );
+      
+      console.log('Valid nodes:', Array.from(validNodeIds));
+      console.log('Filtered edges:', filteredEdges.length);
+      
+      const flowEdges = filteredEdges.map((edge) => ({
+        id: `${edge.source}-${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        type: edge.edge_type === 'team' ? 'default' : 'smoothstep',
+        animated: edge.edge_type === 'transaction',
+        style: {
+          stroke: edge.edge_type === 'team' ? (teamData.team_color || '#8B5CF6') : '#3B82F6',
+          strokeWidth: Math.min(edge.weight / 10 + 2, 6),
+        },
+        markerEnd: edge.edge_type === 'transaction' ? {
+          type: MarkerType.ArrowClosed,
+        } : undefined,
+      }));
+
+      // Add team member connections (cyclic graph) - only if we have multiple agents
+      const teamAgentNodeIds = flowNodes
+        .filter(n => n.type === 'agentNode')
+        .map(n => n.id);
+      
+      console.log('Creating team edges for agents:', teamAgentNodeIds);
+      
+      if (teamAgentNodeIds.length > 1) {
+        for (let i = 0; i < teamAgentNodeIds.length; i++) {
+          const nextIndex = (i + 1) % teamAgentNodeIds.length;
+          const sourceId = teamAgentNodeIds[i];
+          const targetId = teamAgentNodeIds[nextIndex];
+          
+          // Verify both nodes exist before creating edge
+          if (sourceId && targetId) {
+            flowEdges.push({
+              id: `team-${sourceId}-${targetId}`,
+              source: sourceId,
+              target: targetId,
+              type: 'smoothstep',
+              animated: false,
+              style: {
+                stroke: teamData.team_color || '#8B5CF6',
+                strokeWidth: 3,
+                strokeDasharray: '5,5',
+              },
+            });
+          }
+        }
+      }
+
+      setNodes(flowNodes);
+      setEdges(flowEdges);
+    } catch (err) {
+      console.error('Failed to load team graph:', err);
+      alert('Failed to load team graph: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [teamId]);
+
+  useEffect(() => {
+    loadTeamGraph();
+  }, [loadTeamGraph]);
+
+  const calculatePosition = (index, total) => {
+    const radius = 300;
+    const angle = (index / total) * 2 * Math.PI;
+    return {
+      x: 400 + radius * Math.cos(angle),
+      y: 300 + radius * Math.sin(angle),
+    };
+  };
+
+  const onNodeClick = useCallback((event, node) => {
+    setSelectedNode(node);
+    setShowTransactions(false);
+    setTransactions([]);
+  }, []);
+
+  const loadTransactions = async (agentId) => {
+    setLoadingTransactions(true);
+    try {
+      const response = await fetch(`/api/v1/agents/${agentId}/transactions`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        },
+      });
+      const data = await response.json();
+      setTransactions(data);
+      setShowTransactions(true);
+    } catch (err) {
+      console.error('Failed to load transactions:', err);
+      alert('Failed to load transaction history');
+    } finally {
+      setLoadingTransactions(false);
+    }
+  };
+
+  const getModelColor = (model) => {
+    const colors = {
+      'gpt-4': '#3B82F6',
+      'claude-sonnet-4': '#8B5CF6',
+      'gemini-pro': '#10B981',
+    };
+    return colors[model] || '#6B7280';
+  };
+
+  // Agent Node Component
+  const AgentNode = ({ data }) => {
+    const modelColor = getModelColor(data.foundational_model);
+    const tierShape = data.tier === 'premium' ? '⬡' : data.tier === 'enterprise' ? '◆' : '●';
+    return (
+      <div
+        className="px-4 py-3 rounded-xl shadow-lg border-2 bg-white dark:bg-gray-800 min-w-[200px]"
+        style={{ borderColor: data.team_color || modelColor }}
+      >
+        
+        <div className="flex items-center space-x-2 mb-2">
+          <span className="text-2xl">{tierShape}</span>
+          <Bot className="h-5 w-5" style={{ color: modelColor }} />
+        </div>
+        
+        <p className="font-bold text-sm text-gray-900 dark:text-white mb-1">
+          {data.label}
+        </p>
+        
+        <div className="flex items-center space-x-2 text-xs mb-2">
+          <span className="px-2 py-1 rounded-full font-semibold" style={{ 
+            backgroundColor: `${modelColor}20`, 
+            color: modelColor 
+          }}>
+            {data.foundational_model}
+          </span>
+        </div>
+        
+        <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-400">
+          <div className="flex items-center justify-between">
+            <span>📊 Txs:</span>
+            <span className="font-bold">{data.stats.transaction_count}</span>
+          </div>
+          {data.stats.last_transaction_amount && (
+            <>
+              <div className="flex items-center justify-between">
+                <span>💰 Last Paid:</span>
+                <span className="font-bold text-green-600">${data.stats.last_transaction_amount.toFixed(2)}</span>
+              </div>
+              {data.stats.last_transaction_item && (
+                <div className="pt-1 border-t border-gray-200 dark:border-gray-700">
+                  <span className="text-xs text-gray-500">📦 {data.stats.last_transaction_item}</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // Merchant Node Component
+  const MerchantNode = ({ data }) => {
+    return (
+      <div className="px-4 py-3 rounded-xl shadow-lg border-2 border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 min-w-[150px]">
+        <div className="flex items-center space-x-2 mb-2">
+          <Store className="h-5 w-5 text-gray-600 dark:text-gray-400" />
+        </div>
+        <p className="font-bold text-sm text-gray-900 dark:text-white mb-1">
+          {data.label}
+        </p>
+        <div className="text-xs text-gray-600 dark:text-gray-400">
+          <div className="flex items-center justify-between">
+            <span>Transactions:</span>
+            <span className="font-bold">{data.stats.transaction_count}</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const nodeTypes = React.useMemo(() => ({
+    agentNode: AgentNode,
+    merchantNode: MerchantNode,
+  }), [AgentNode, MerchantNode]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-purple-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-gradient-to-br from-purple-50 to-pink-50 dark:from-gray-900 dark:to-gray-800">
+      {/* Header */}
+      <div className="bg-white dark:bg-gray-800 border-b-2 border-gray-200 dark:border-gray-700 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => navigate('/network/teams')}
+              className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-xl font-bold hover:bg-gray-300 dark:hover:bg-gray-600 transition-all flex items-center space-x-2"
+            >
+              <ArrowLeft className="h-5 w-5" />
+              <span>Back to Teams</span>
+            </button>
+            <div className="h-8 w-px bg-gray-300 dark:bg-gray-600"></div>
+            <div
+              className="w-4 h-4 rounded-full"
+              style={{ backgroundColor: team?.team_color }}
+            ></div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+              {team?.team_name}
+            </h1>
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              ({team?.members?.length || 0} agents)
+            </span>
+          </div>
+
+          <button
+            onClick={() => setShowEvaluationModal(true)}
+            className="px-6 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl font-bold hover:from-blue-700 hover:to-purple-700 transition-all flex items-center space-x-2"
+          >
+            <Target className="h-5 w-5" />
+            <span>Run Team Evaluation</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Graph Canvas */}
+      <div className="flex-1 flex">
+        <div className="flex-1">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodeClick={onNodeClick}
+            nodeTypes={nodeTypes}
+            fitView
+            className="bg-gradient-to-br from-purple-50 to-pink-50 dark:from-gray-900 dark:to-gray-800"
+          >
+            <Controls />
+            <MiniMap />
+            <Background variant="dots" gap={12} size={1} />
+          </ReactFlow>
+        </div>
+
+        {/* Side Panel */}
+        <div className="w-80 bg-white dark:bg-gray-800 border-l-2 border-gray-200 dark:border-gray-700 p-6 overflow-y-auto">
+          {selectedNode ? (
+            <div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4">
+                {selectedNode.data.node_type === 'agent' ? '🤖 Agent Details' : '🏪 Merchant Details'}
+              </h3>
+              
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Name</p>
+                  <p className="text-lg font-bold text-gray-900 dark:text-white">
+                    {selectedNode.data.label}
+                  </p>
+                </div>
+
+                {selectedNode.data.foundational_model && (
+                  <div>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Model</p>
+                    <p className="font-semibold text-gray-900 dark:text-white">
+                      {selectedNode.data.foundational_model}
+                    </p>
+                  </div>
+                )}
+
+                <div>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Transactions</p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">
+                    {selectedNode.data.stats.transaction_count}
+                  </p>
+                </div>
+
+                {selectedNode.data.node_type === 'agent' && selectedNode.data.stats.transaction_count > 0 && (
+                  <button
+                    onClick={() => showTransactions ? setShowTransactions(false) : loadTransactions(selectedNode.id)}
+                    disabled={loadingTransactions}
+                    className="w-full px-4 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all flex items-center justify-center space-x-2"
+                  >
+                    <History className="h-5 w-5" />
+                    <span>{loadingTransactions ? 'Loading...' : (showTransactions ? 'Hide History' : 'View History')}</span>
+                    {!loadingTransactions && (showTransactions ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />)}
+                  </button>
+                )}
+
+                {showTransactions && transactions.length > 0 && (
+                  <div className="space-y-2 max-h-80 overflow-y-auto">
+                    <p className="text-xs font-bold text-gray-700 dark:text-gray-300 uppercase">Transaction History</p>
+                    {transactions.map((tx, idx) => (
+                      <div
+                        key={tx.id}
+                        className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-gray-900 dark:text-white">
+                            #{transactions.length - idx}
+                          </span>
+                          <span className={`text-xs px-2 py-1 rounded-full font-bold ${
+                            tx.status === 'completed' 
+                              ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                              : tx.status === 'pending'
+                              ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400'
+                              : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+                          }`}>
+                            {tx.status}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-600 dark:text-gray-400">Amount</p>
+                          <p className="text-lg font-bold text-gray-900 dark:text-white">
+                            ${tx.amount.toFixed(2)}
+                          </p>
+                        </div>
+                        {tx.description && (
+                          <div>
+                            <p className="text-xs text-gray-600 dark:text-gray-400">Item</p>
+                            <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                              {tx.description}
+                            </p>
+                          </div>
+                        )}
+                        <div>
+                          <p className="text-xs text-gray-600 dark:text-gray-400">Date</p>
+                          <p className="text-xs text-gray-700 dark:text-gray-300">
+                            {new Date(tx.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {showTransactions && transactions.length === 0 && (
+                  <div className="text-center py-4 text-gray-500 dark:text-gray-400">
+                    <p className="text-sm">No transaction history available</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center text-gray-500 dark:text-gray-400 mt-12">
+              <Bot className="h-16 w-16 mx-auto mb-4 opacity-50" />
+              <p className="text-sm">Click any node to see details</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Evaluation Modal */}
+      {team && (
+        <EvaluationModal
+          isOpen={showEvaluationModal}
+          onClose={() => setShowEvaluationModal(false)}
+          agents={team.members}
+          teams={[team]}
+          preSelectedTeam={`team-${team.id}`}
+          onExecute={() => {
+            loadTeamGraph();
+            setShowEvaluationModal(false);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+export default TeamGraphView;
