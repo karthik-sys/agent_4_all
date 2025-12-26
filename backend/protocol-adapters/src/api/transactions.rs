@@ -68,7 +68,7 @@ pub async fn create_transaction(
 
     // Check agent's remaining balance
     let agent_row = sqlx::query(
-        "SELECT balance FROM agents WHERE id = $1"
+        "SELECT remaining_balance FROM agents WHERE id = $1"
     )
     .bind(&req.agent_id)
     .fetch_optional(&state.db.pool)
@@ -82,21 +82,12 @@ pub async fn create_transaction(
         StatusCode::NOT_FOUND
     })?;
 
-    let balance: i64 = agent_row.get::<rust_decimal::Decimal, _>("balance").to_string().parse().unwrap_or(0);
+    let remaining_balance: f64 = agent_row.get::<rust_decimal::Decimal, _>("remaining_balance")
+        .to_string().parse().unwrap_or(0.0);
 
-    // Calculate total spent so far
-    let total_spent: rust_decimal::Decimal = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE agent_id = $1 AND status = 'completed'"
-    )
-    .bind(&req.agent_id)
-    .fetch_one(&state.db.pool)
-    .await
-    .unwrap_or(rust_decimal::Decimal::ZERO);
 
-    let remaining_balance = balance as f64 - total_spent.to_string().parse::<f64>().unwrap_or(0.0);
-
-    info!("💰 Balance check - Balance: ${}, Spent: ${}, Remaining: ${}, Requested: ${}", 
-        balance, total_spent, remaining_balance, req.amount);
+    info!("💰 Balance check - Remaining: ${}, Requested: ${}", 
+        remaining_balance, req.amount);
 
     // Reject if transaction would exceed balance
     if req.amount > remaining_balance {
@@ -153,8 +144,8 @@ pub async fn create_transaction(
         id: row.get::<Uuid, _>("id").to_string(),
         agent_id: row.get("agent_id"),
         agent_name: row.get("agent_name"),
-        agent_owner_name: row.get("owner_company"),
-        agent_owner_email: row.get("owner_email"),
+        agent_owner_name: row.get::<Option<String>, _>("owner_company").unwrap_or_else(|| "Unknown".to_string()),
+        agent_owner_email: row.get::<Option<String>, _>("owner_email").unwrap_or_else(|| "unknown@example.com".to_string()),
         merchant_id: row.get::<Uuid, _>("merchant_id").to_string(),
         merchant_name: row.get("merchant_name"),
         amount: row.get::<rust_decimal::Decimal, _>("amount").to_string().parse().unwrap_or(0.0),
@@ -275,8 +266,8 @@ pub async fn get_merchant_transactions(
             id: row.get::<Uuid, _>("id").to_string(),
             agent_id: row.get("agent_id"),
             agent_name: row.get("agent_name"),
-            agent_owner_name: row.get("owner_company"),
-            agent_owner_email: row.get("owner_email"),
+            agent_owner_name: row.get::<Option<String>, _>("owner_company").unwrap_or_else(|| "Unknown".to_string()),
+            agent_owner_email: row.get::<Option<String>, _>("owner_email").unwrap_or_else(|| "unknown@example.com".to_string()),
             merchant_id: row.get::<Uuid, _>("merchant_id").to_string(),
             merchant_name: row.get("merchant_name"),
             amount: row.get::<rust_decimal::Decimal, _>("amount").to_string().parse().unwrap_or(0.0),
@@ -327,8 +318,8 @@ pub async fn list_all_transactions(
             id: row.get::<Uuid, _>("id").to_string(),
             agent_id: row.get("agent_id"),
             agent_name: row.get("agent_name"),
-            agent_owner_name: row.get("owner_company"),
-            agent_owner_email: row.get("owner_email"),
+            agent_owner_name: row.get::<Option<String>, _>("owner_company").unwrap_or_else(|| "Unknown".to_string()),
+            agent_owner_email: row.get::<Option<String>, _>("owner_email").unwrap_or_else(|| "unknown@example.com".to_string()),
             merchant_id: row.get::<Uuid, _>("merchant_id").to_string(),
             merchant_name: row.get("merchant_name"),
             amount: row.get::<rust_decimal::Decimal, _>("amount").to_string().parse().unwrap_or(0.0),

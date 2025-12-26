@@ -226,6 +226,7 @@ const RegisterAgent = () => {
                     required
                     value={formData.name}
                     onChange={handleChange}
+                autoComplete="off"
                     className="block w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all"
                     placeholder="My Shopping Agent"
                   />
@@ -312,6 +313,7 @@ const RegisterAgent = () => {
                   step="0.01"
                   value={formData.balance}
                   onChange={handleChange}
+                autoComplete="off"
                   className="block w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all text-lg font-semibold"
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
@@ -332,6 +334,7 @@ const RegisterAgent = () => {
                     step="0.01"
                     value={formData.spending_limit_daily}
                     onChange={handleChange}
+                autoComplete="off"
                     className="block w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all"
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Maximum spend per day</p>
@@ -349,6 +352,7 @@ const RegisterAgent = () => {
                     step="0.01"
                     value={formData.spending_limit_monthly}
                     onChange={handleChange}
+                autoComplete="off"
                     className="block w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all"
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Maximum spend per month</p>
@@ -366,6 +370,7 @@ const RegisterAgent = () => {
                     step="0.01"
                     value={formData.spending_limit_per_tx}
                     onChange={handleChange}
+                autoComplete="off"
                     className="block w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all"
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Maximum per transaction</p>

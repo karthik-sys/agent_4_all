@@ -211,6 +211,7 @@ const TransactionModal = ({ isOpen, onClose, agent, onSuccess }) => {
                   value={formData.amount}
                   onChange={handleChange}
                   disabled={loading || result?.approved}
+                autoComplete="off"
                   className="block w-full pl-12 pr-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all disabled:opacity-50"
                   placeholder="0.00"
                 />
@@ -227,6 +228,7 @@ const TransactionModal = ({ isOpen, onClose, agent, onSuccess }) => {
                 value={formData.description}
                 onChange={handleChange}
                 disabled={loading || result?.approved}
+                autoComplete="off"
                 className="block w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all disabled:opacity-50"
                 placeholder="What are you buying?"
               />

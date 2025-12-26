@@ -89,6 +89,7 @@ const Login = () => {
                   required
                   value={formData.email}
                   onChange={handleChange}
+                autoComplete="off"
                   className="block w-full pl-12 pr-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all"
                   placeholder="you@example.com"
                 />
@@ -107,6 +108,7 @@ const Login = () => {
                   required
                   value={formData.password}
                   onChange={handleChange}
+                autoComplete="off"
                   className="block w-full pl-12 pr-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all"
                   placeholder="••••••••"
                 />

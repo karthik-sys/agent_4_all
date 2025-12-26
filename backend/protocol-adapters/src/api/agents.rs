@@ -251,9 +251,10 @@ pub async fn get_agent_transactions(
     info!("📋 Fetching transactions for agent: {}", agent_id);
 
     let rows = sqlx::query(
-        "SELECT t.id, t.amount, t.description, t.status, t.created_at, t.merchant_id
+        "SELECT t.id, t.amount, t.description, t.status, t.created_at, t.merchant_id, m.merchant_name
          FROM transactions t
          JOIN agents a ON a.id = t.agent_id
+         LEFT JOIN merchants m ON m.id = t.merchant_id
          WHERE t.agent_id = $1 AND a.user_id = $2
          ORDER BY t.created_at DESC
          LIMIT 100"
@@ -277,6 +278,7 @@ pub async fn get_agent_transactions(
                 "status": row.get::<String, _>("status"),
                 "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
                 "merchant_id": row.get::<uuid::Uuid, _>("merchant_id").to_string(),
+                "merchant_name": row.get::<Option<String>, _>("merchant_name").unwrap_or_else(|| "Unknown".to_string()),
             })
         })
         .collect();
