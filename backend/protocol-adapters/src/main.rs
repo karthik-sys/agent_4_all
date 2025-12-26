@@ -44,9 +44,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/merchant/register", post(api::merchant_register))
         .route("/auth/merchant/login", post(api::merchant_login))
         
-        .route("/api/v1/agents/register", post(api::register_agent))
+        .route("/api/v1/agents/register", post(api::create_agent))
         .route("/api/v1/agents/:id/transactions", get(api::get_agent_transactions))
-        .route("/api/v1/agents/:id/limits", put(api::update_agent_limits))
         .route("/api/v1/agents/:id", get(api::get_agent))
         .route("/api/v1/agents/:id", delete(api::delete_agent))
         .route("/api/v1/agents", get(api::list_agents))

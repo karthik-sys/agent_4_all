@@ -9,11 +9,11 @@ const RegisterAgent = () => {
     name: '',
     tier: 'bronze',
     spending_limit_daily: 1000,
-    spending_limit_monthly: 2000,
+    spending_limit_monthly: 30000,
     spending_limit_per_tx: 100,
     balance: 10000,
     protocol: 'ACP',
-    foundational_model: 'LLaMa',
+    foundational_model: 'Claude',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -156,11 +156,11 @@ const RegisterAgent = () => {
                     name: '',
                     tier: 'bronze',
                     spending_limit_daily: 1000,
-                    spending_limit_monthly: 2000,
+                    spending_limit_monthly: 30000,
                     spending_limit_per_tx: 100,
                     balance: 10000,
                     protocol: 'ACP',
-                    foundational_model: 'LLaMa',
+                    foundational_model: 'Claude',
                   });
                 }}
                 className="flex-1 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 py-3 rounded-xl font-bold hover:bg-gray-300 dark:hover:bg-gray-600 transition-all"
@@ -259,7 +259,6 @@ const RegisterAgent = () => {
                     onChange={handleChange}
                     className="block w-full px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white transition-all"
                   >
-                    <option value="Custom">LLaMa</option>
                     <option value="Claude">Claude</option>
                     <option value="GPT-4">GPT-4</option>
                     <option value="Gemini">Gemini</option>

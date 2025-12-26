@@ -34,6 +34,22 @@ const TransactionModal = ({ isOpen, onClose, agent, onSuccess }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // Calculate remaining balance
+    const remainingBalance = agent.transaction_limit - (agent.total_spent || 0);
+    const requestedAmount = parseFloat(formData.amount);
+    
+    // Check if amount exceeds remaining balance
+    if (requestedAmount > remainingBalance) {
+      setResult({
+        approved: false,
+        status: 'error',
+        reason: `Insufficient balance. Available: $${remainingBalance.toFixed(2)}, Requested: $${requestedAmount.toFixed(2)}`,
+        risk_score: 100,
+      });
+      return;
+    }
+    
     setLoading(true);
     setResult(null);
 
@@ -54,10 +70,14 @@ const TransactionModal = ({ isOpen, onClose, agent, onSuccess }) => {
         }, 2000);
       }
     } catch (err) {
+      const errorMessage = err.response?.status === 402 
+        ? 'Insufficient balance to complete this transaction'
+        : (err.response?.data?.message || 'Transaction failed');
+      
       setResult({
         approved: false,
         status: 'error',
-        reason: err.response?.data?.message || 'Transaction failed',
+        reason: errorMessage,
         risk_score: 100,
       });
     } finally {

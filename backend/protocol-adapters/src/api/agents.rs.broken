@@ -1,0 +1,601 @@
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use rust_decimal::prelude::ToPrimitive;
+use tracing::{error, info};
+use uuid::Uuid;
+use sqlx::Row;
+
+use crate::AppState;
+
+// Request/Response models
+#[derive(Debug, Deserialize)]
+pub struct RegisterAgentRequest {
+    pub agent_name: String,
+    pub owner_company: String,
+    pub owner_email: String,
+    pub protocol: String,
+    pub foundational_model: Option<String>,
+    pub spending_limits: SpendingLimits,
+    pub user_id: Option<Uuid>, // Add this - for admin creating agents
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SpendingLimits {
+    pub per_transaction: f64,
+    pub daily: f64,
+    pub monthly: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegisterAgentResponse {
+    pub agent_id: String,
+    pub api_key: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Agent {
+    pub id: String,
+    pub agent_name: String,
+    pub owner_company: String,
+    pub owner_email: String,
+    pub protocol: String,
+    pub foundational_model: Option<String>,
+    pub spending_limits: SpendingLimits,
+    pub status: String,
+    pub balance: f64,
+    pub total_volume: f64,
+    pub transaction_count: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateLimitsRequest {
+    pub per_transaction: Option<f64>,
+    pub daily: Option<f64>,
+    pub monthly: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Transaction {
+    pub id: Uuid,
+    pub amount: Option<f64>,
+    pub currency: String,
+    pub merchant_id: String,
+    pub protocol: String,
+    pub status: String,
+    pub risk_score: Option<i32>,
+    pub created_at: String,
+}
+
+// Extract user_id from JWT (we'll add proper JWT middleware later)
+fn extract_user_from_header(headers: &axum::http::HeaderMap) -> Option<(Uuid, String)> {
+    let token = headers.get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))?;
+    
+    let claims = crate::auth::verify_token(token).ok()?;
+    let user_id = Uuid::parse_str(&claims.sub).ok()?;
+    Some((user_id, claims.role))
+}
+
+pub async fn register_agent(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<RegisterAgentRequest>,
+) -> Result<Json<RegisterAgentResponse>, StatusCode> {
+    info!("📝 Agent registration request: {}", req.agent_name);
+
+    // Get user from JWT token
+    let (user_id, user_role) = extract_user_from_header(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Determine which user_id to use
+    let owner_user_id = if user_role == "admin" && req.user_id.is_some() {
+        // Admin can create agents for other users
+        req.user_id.unwrap()
+    } else {
+        // Regular users create for themselves
+        user_id
+    };
+
+    let agent_id = format!("agent_{}_{}",
+        req.protocol.to_lowercase(),
+        uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string()
+    );
+    
+    let api_key = format!("sk_live_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
+
+    let result = sqlx::query(
+        "INSERT INTO agents (
+            id, agent_name, owner_company, owner_email, protocol, 
+            foundational_model, spending_limit_per_tx, spending_limit_daily, 
+            spending_limit_monthly, status, user_id, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10, NOW())
+        RETURNING created_at"
+    )
+    .bind(&agent_id)
+    .bind(&req.agent_name)
+    .bind(&req.owner_company)
+    .bind(&req.owner_email)
+    .bind(&req.protocol)
+    .bind(&req.foundational_model)
+    .bind(req.spending_limits.per_transaction)
+    .bind(req.spending_limits.daily)
+    .bind(req.spending_limits.monthly)
+    .bind(&owner_user_id)
+    .fetch_one(&state.db.pool)
+    .await;
+
+    match result {
+        Ok(row) => {
+            let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+            info!("✅ Agent registered: {}", agent_id);
+            Ok(Json(RegisterAgentResponse {
+                agent_id,
+                api_key,
+                status: "active".to_string(),
+                created_at: created_at.to_rfc3339(),
+            }))
+        }
+        Err(e) => {
+            error!("Failed to register agent: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn list_agents(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<Agent>>, StatusCode> {
+    info!("📋 Listing agents");
+
+    // Get user from JWT token
+    let (user_id, user_role) = extract_user_from_header(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Admin sees all agents, users see only their own
+    let query = if user_role == "admin" {
+        "SELECT id, agent_name, owner_company, owner_email, protocol, foundational_model,
+                spending_limit_per_tx, spending_limit_daily, spending_limit_monthly,
+                status, balance, total_volume, transaction_count, created_at
+         FROM agents
+         ORDER BY created_at DESC"
+    } else {
+        "SELECT id, agent_name, owner_company, owner_email, protocol, foundational_model,
+                spending_limit_per_tx, spending_limit_daily, spending_limit_monthly,
+                status, balance, total_volume, transaction_count, created_at
+         FROM agents
+         WHERE user_id = $1
+         ORDER BY created_at DESC"
+    };
+
+    let rows = if user_role == "admin" {
+        sqlx::query(query)
+            .fetch_all(&state.db.pool)
+            .await
+    } else {
+        sqlx::query(query)
+            .bind(&user_id)
+            .fetch_all(&state.db.pool)
+            .await
+    };
+
+    match rows {
+        Ok(rows) => {
+            let agents: Vec<Agent> = rows.iter().map(|row| {
+                Agent {
+                    id: row.get("id"),
+                    agent_name: row.get("agent_name"),
+                    owner_company: row.get("owner_company"),
+                    owner_email: row.get("owner_email"),
+                    protocol: row.get("protocol"),
+                    foundational_model: row.get("foundational_model"),
+                    spending_limits: SpendingLimits {
+                        per_transaction: row.get::<rust_decimal::Decimal, _>("spending_limit_per_tx").to_f64().unwrap_or(0.0),
+                        daily: row.get::<rust_decimal::Decimal, _>("spending_limit_daily").to_f64().unwrap_or(0.0),
+                        monthly: row.get::<rust_decimal::Decimal, _>("spending_limit_monthly").to_f64().unwrap_or(0.0),
+                    },
+                    status: row.get("status"),
+                    balance: row.get::<rust_decimal::Decimal, _>("balance").to_f64().unwrap_or(0.0),
+                    total_volume: row.get::<rust_decimal::Decimal, _>("total_volume").to_f64().unwrap_or(0.0),
+                    transaction_count: row.get("transaction_count"),
+                    created_at: row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+                }
+            }).collect();
+
+            info!("✅ Returning {} agents", agents.len());
+            Ok(Json(agents))
+        }
+        Err(e) => {
+            error!("Failed to list agents: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn get_agent(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Agent>, StatusCode> {
+    info!("🔍 Getting agent: {}", agent_id);
+
+    let (user_id, user_role) = extract_user_from_header(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let query = if user_role == "admin" {
+        "SELECT id, agent_name, owner_company, owner_email, protocol, foundational_model,
+                spending_limit_per_tx, spending_limit_daily, spending_limit_monthly,
+                status, balance, total_volume, transaction_count, created_at
+         FROM agents WHERE id = $1"
+    } else {
+        "SELECT id, agent_name, owner_company, owner_email, protocol, foundational_model,
+                spending_limit_per_tx, spending_limit_daily, spending_limit_monthly,
+                status, balance, total_volume, transaction_count, created_at
+         FROM agents WHERE id = $1 AND user_id = $2"
+    };
+
+    let row = if user_role == "admin" {
+        sqlx::query(query)
+            .bind(&agent_id)
+            .fetch_optional(&state.db.pool)
+            .await
+    } else {
+        sqlx::query(query)
+            .bind(&agent_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db.pool)
+            .await
+    };
+
+    match row {
+        Ok(Some(row)) => {
+            let agent = Agent {
+                id: row.get("id"),
+                agent_name: row.get("agent_name"),
+                owner_company: row.get("owner_company"),
+                owner_email: row.get("owner_email"),
+                protocol: row.get("protocol"),
+                foundational_model: row.get("foundational_model"),
+                spending_limits: SpendingLimits {
+                    per_transaction: row.get::<rust_decimal::Decimal, _>("spending_limit_per_tx").to_f64().unwrap_or(0.0),
+                    daily: row.get::<rust_decimal::Decimal, _>("spending_limit_daily").to_f64().unwrap_or(0.0),
+                    monthly: row.get::<rust_decimal::Decimal, _>("spending_limit_monthly").to_f64().unwrap_or(0.0),
+                },
+                status: row.get("status"),
+                    balance: row.get::<rust_decimal::Decimal, _>("balance").to_f64().unwrap_or(0.0),
+                total_volume: row.get::<rust_decimal::Decimal, _>("total_volume").to_f64().unwrap_or(0.0),
+                transaction_count: row.get("transaction_count"),
+                created_at: row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+            };
+            Ok(Json(agent))
+        }
+        Ok(None) => {
+            info!("❌ Agent not found or unauthorized: {}", agent_id);
+            Err(StatusCode::NOT_FOUND)
+        }
+        Err(e) => {
+            error!("Failed to get agent: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn get_agent_transactions(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Vec<Transaction>>, StatusCode> {
+    info!("📊 Getting transactions for agent: {}", agent_id);
+
+    let (user_id, user_role) = extract_user_from_header(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Verify user owns this agent (unless admin)
+    if user_role != "admin" {
+        let check = sqlx::query("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(&agent_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        
+        if check.is_none() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    let rows = sqlx::query(
+        "SELECT id, amount, currency, merchant_id, protocol, status, risk_score, created_at
+         FROM transactions
+         WHERE agent_id = $1
+         ORDER BY created_at DESC
+         LIMIT 100"
+    )
+    .bind(&agent_id)
+    .fetch_all(&state.db.pool)
+    .await;
+
+    match rows {
+        Ok(rows) => {
+            let transactions: Vec<Transaction> = rows.iter().map(|row| {
+                Transaction {
+                    id: row.get("id"),
+                    amount: row.get::<Option<rust_decimal::Decimal>, _>("amount")
+                        .map(|d| d.to_f64().unwrap_or(0.0)),
+                    currency: row.get("currency"),
+                    merchant_id: row.get("merchant_id"),
+                    protocol: row.get("protocol"),
+                    status: row.get("status"),
+                    risk_score: row.get("risk_score"),
+                    created_at: row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+                }
+            }).collect();
+
+            Ok(Json(transactions))
+        }
+        Err(e) => {
+            error!("Failed to get transactions: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn update_agent_limits(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(req): Json<UpdateLimitsRequest>,
+) -> Result<StatusCode, StatusCode> {
+    info!("💰 Updating limits for agent: {}", agent_id);
+
+    let (user_id, user_role) = extract_user_from_header(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Verify user owns this agent (unless admin)
+    if user_role != "admin" {
+        let check = sqlx::query("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(&agent_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        
+        if check.is_none() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    let mut query_parts = Vec::new();
+    let mut values: Vec<String> = Vec::new();
+
+    if let Some(per_tx) = req.per_transaction {
+        query_parts.push(format!("spending_limit_per_tx = ${}", values.len() + 2));
+        values.push(per_tx.to_string());
+    }
+    if let Some(daily) = req.daily {
+        query_parts.push(format!("spending_limit_daily = ${}", values.len() + 2));
+        values.push(daily.to_string());
+    }
+    if let Some(monthly) = req.monthly {
+        query_parts.push(format!("spending_limit_monthly = ${}", values.len() + 2));
+        values.push(monthly.to_string());
+    }
+
+    if query_parts.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let query = format!(
+        "UPDATE agents SET {} WHERE id = $1",
+        query_parts.join(", ")
+    );
+
+    let mut query_builder = sqlx::query(&query).bind(&agent_id);
+    for value in values {
+        query_builder = query_builder.bind(value);
+    }
+
+    match query_builder.execute(&state.db.pool).await {
+        Ok(_) => {
+            info!("✅ Updated limits for agent: {}", agent_id);
+            Ok(StatusCode::OK)
+        }
+        Err(e) => {
+            error!("Failed to update limits: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn delete_agent(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    info!("🗑️ Suspending agent: {}", agent_id);
+
+    let (user_id, user_role) = extract_user_from_header(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Verify user owns this agent (unless admin)
+    if user_role != "admin" {
+        let check = sqlx::query("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(&agent_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        
+        if check.is_none() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    let result = sqlx::query("UPDATE agents SET status = 'suspended' WHERE id = $1")
+        .bind(&agent_id)
+        .execute(&state.db.pool)
+        .await;
+
+    match result {
+        Ok(_) => {
+            info!("✅ Agent suspended: {}", agent_id);
+            Ok(StatusCode::OK)
+        }
+        Err(e) => {
+            error!("Failed to suspend agent: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// Add at the end of the file
+
+#[derive(Debug, Deserialize)]
+pub struct CreateTransactionRequest {
+    pub merchant_id: String,
+    pub amount: f64,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateTransactionResponse {
+    pub transaction_id: Uuid,
+    pub status: String,
+    pub risk_score: f64,
+    pub approved: bool,
+    pub reason: Option<String>,
+}
+
+pub async fn create_transaction(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(req): Json<CreateTransactionRequest>,
+) -> Result<Json<CreateTransactionResponse>, StatusCode> {
+    info!("💳 Creating transaction for agent: {}", agent_id);
+
+    // Get user from JWT token
+    let (user_id, user_role) = extract_user_from_header(&headers)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Verify user owns this agent (unless admin)
+    if user_role != "admin" {
+        let check = sqlx::query("SELECT id FROM agents WHERE id = $1 AND user_id = $2")
+            .bind(&agent_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        
+        if check.is_none() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    // Create security context
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let context = security_gateway::SecurityContext {
+        agent_id: agent_id.clone(),
+        agent_owner: None,
+        foundational_model: None,
+        protocol: security_gateway::Protocol::Custom("TEST".to_string()),
+        transaction_id: uuid::Uuid::new_v4().to_string(),
+        amount: Some(req.amount),
+        currency: "USD".to_string(),
+        merchant_id: req.merchant_id.clone(),
+        merchant_name: None,
+        timestamp: chrono::Utc::now(),
+        user_id: Some(user_id.to_string()),
+        session_id: None,
+        ip_address: None,
+        user_agent: None,
+        payment_method_type: None,
+        payment_token: None,
+        signature: None,
+        nonce: nonce.clone(),
+        risk_score: None,
+        metadata: std::collections::HashMap::new(),
+        raw_request: serde_json::json!({
+            "merchant_id": req.merchant_id,
+            "amount": req.amount,
+            "description": req.description,
+            "test_transaction": true
+        }),
+    };
+
+    // Verify through security gateway
+    let verification = match state.gateway.verify(&context).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Security verification error: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    info!("✅ Verification result - Approved: {}, Risk: {:.1}", verification.approved, verification.risk_score);
+
+    // Log transaction
+    let transaction_id = uuid::Uuid::new_v4();
+    let status = if verification.approved { "pending" } else { "declined" };
+
+    let result = sqlx::query(
+        "INSERT INTO transactions (
+            id, agent_id, merchant_id, protocol, amount, currency, 
+            status, risk_score, nonce, raw_request, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())"
+    )
+    .bind(&transaction_id)
+    .bind(&agent_id)
+    .bind(&req.merchant_id)
+    .bind("TEST")
+    .bind(req.amount)
+    .bind("USD")
+    .bind(status)
+    .bind(verification.risk_score as i32)
+    .bind(&nonce)
+    .bind(&context.raw_request)
+    .execute(&state.db.pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            info!("✅ Transaction logged: {}", transaction_id);
+            
+            // Update agent stats
+            if verification.approved {
+                let _ = sqlx::query(
+                    "UPDATE agents 
+                     SET total_volume = total_volume + $1, 
+                         transaction_count = transaction_count + 1 
+                     WHERE id = $2"
+                )
+                .bind(req.amount)
+                .bind(&agent_id)
+                .execute(&state.db.pool)
+                .await;
+            }
+
+            Ok(Json(CreateTransactionResponse {
+                transaction_id,
+                status: status.to_string(),
+                risk_score: verification.risk_score,
+                approved: verification.approved,
+                reason: verification.reason,
+            }))
+        }
+        Err(e) => {
+            error!("Failed to log transaction: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+

@@ -165,6 +165,7 @@ const NetworkGraphView = () => {
       'gpt-4': '#3B82F6',
       'claude-sonnet-4': '#8B5CF6',
       'gemini-pro': '#10B981',
+      'llama-3': '#F59E0B',
     };
     return colors[model] || '#6B7280';
   };

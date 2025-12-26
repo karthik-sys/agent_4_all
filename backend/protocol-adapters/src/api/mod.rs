@@ -5,12 +5,12 @@ mod agent_blocking_handlers;
 mod admin_block_ledger;
 
 pub use agents::{
-    register_agent,
+    create_agent,
+    
     list_agents,
     get_agent,
     delete_agent,
     get_agent_transactions,
-    update_agent_limits,
 };
 
 pub use merchant_handlers::{

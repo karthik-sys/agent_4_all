@@ -66,6 +66,46 @@ pub async fn create_transaction(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    // Check agent's remaining balance
+    let agent_row = sqlx::query(
+        "SELECT balance FROM agents WHERE id = $1"
+    )
+    .bind(&req.agent_id)
+    .fetch_optional(&state.db.pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch agent: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or_else(|| {
+        error!("Agent not found: {}", req.agent_id);
+        StatusCode::NOT_FOUND
+    })?;
+
+    let balance: i64 = agent_row.get::<rust_decimal::Decimal, _>("balance").to_string().parse().unwrap_or(0);
+
+    // Calculate total spent so far
+    let total_spent: rust_decimal::Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE agent_id = $1 AND status = 'completed'"
+    )
+    .bind(&req.agent_id)
+    .fetch_one(&state.db.pool)
+    .await
+    .unwrap_or(rust_decimal::Decimal::ZERO);
+
+    let remaining_balance = balance as f64 - total_spent.to_string().parse::<f64>().unwrap_or(0.0);
+
+    info!("💰 Balance check - Balance: ${}, Spent: ${}, Remaining: ${}, Requested: ${}", 
+        balance, total_spent, remaining_balance, req.amount);
+
+    // Reject if transaction would exceed balance
+    if req.amount > remaining_balance {
+        error!("❌ Insufficient balance. Available: ${}, Requested: ${}", remaining_balance, req.amount);
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
+
+    info!("✅ Balance check passed");
+
     // Create transaction
     let transaction_id = Uuid::new_v4();
     let items_json = req.items.as_ref().map(|i| serde_json::to_value(i).ok()).flatten();
